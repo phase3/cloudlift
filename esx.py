@@ -26,6 +26,7 @@ if args.host:
 def debug(msg):
     if args.debug:
         print "DEBUG:" + msg
+
 def verbose(msg):
     if args.verbose:
         print msg
@@ -38,7 +39,6 @@ def execute(command):
         return {"returncode": ex.returncode, "result": ex.output}
 
 def remote_execute(cmd):
-
     command = "ssh -o  UserKnownHostsFile=/dev/null -o LogLevel=quiet -i " + vm_key + " " + vm_host + " '"+cmd+"'"
     return execute(command)
 
@@ -105,9 +105,8 @@ def validate_vm_args(vmargs):
     return True
 
 def vm_list(vmargs):
-    #result = remote_execute("vim-cmd  vmsvc/getallvms")
     list = get_id_list()
-    print "List of sysprep images on host"
+    print "List of sysprep images"
     for item in list:
         print("%5s  %s" % (item[0], item[1]))
     return True
@@ -181,11 +180,6 @@ def build_seed_iso(name, userdatafile):
         return
     debug(result["result"])
 
-
-
-
-
-
 def vm_add(vmargs):
 
     name = vmargs[2]
@@ -239,6 +233,13 @@ def vm_add(vmargs):
 
     #copy seed.iso to remote folder
     result = execute("scp -o  UserKnownHostsFile=/dev/null -o LogLevel=quiet -i " + vm_key + " seed.iso " + vm_host +":" + esxi_datastore_folder + "/" + name)
+    if result["returncode"] != 0:
+        print "Error: " + result["result"]
+        return
+    debug(result["result"])
+
+    result = execute("rm -f  seed.iso user-data meta-data")
+
     if result["returncode"] != 0:
         print "Error: " + result["result"]
         return
@@ -390,9 +391,38 @@ elif args.command[0] == 'template':
 elif args.command[0] == 'vm':
     if validate_vm_args(args.command):
         do_vm(args.command)
-
-
-
-
+else:
+    print "Usage: esx [options] <command> [<args>]"
+    print ""
+    print "    -v, --verbose        more verbosity"
+    print "    -d, --debug          debug level output including remote commands to the server"
+    print ""
+    print "Common commands:"
+    print "     vm                  vm commands are:"
+    print "             list        list available vms on this server"
+    print ""
+    print "             add    <name> <config_template> <user_data>"
+    print "                         add a new vm, parameters are:"
+    print "                         name - name of new vm    "
+    print "                         config_template - configuration template (in YAML)"
+    print "                         user_data - cloud-init user-data file to include, see:"
+    print "                                     https://cloudinit.readthedocs.org/en/latest/"
+    print ""
+    print "             delete <name>"
+    print "                         power down and delete a vm, parameters are:"
+    print "                         name - name of vm to delete"
+    print ""
+    print "             snapshot    manage snapshots for a vm, commands are:"
+    print "                     list"
+    print "                     create"
+    print "                     remove"
+    print "                     revert"
+    print "                     clear"
+    print ""
+    print "             power        manage power state of a vm"
+    print "                     status"
+    print "                     on"
+    print "                     off"
+    print "                     reset"
 
 
