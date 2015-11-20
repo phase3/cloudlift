@@ -10,6 +10,7 @@ vm_key = os.environ.get('VM_KEY')
 esxi_datastore_folder = "/vmfs/volumes/datastore1"
 
 parser = argparse.ArgumentParser(description='ESXi automation.')
+parser.add_argument('-v', '--verbose', action="store_true", help='show progress')
 parser.add_argument('-d', '--debug', action="store_true", help='run full debug')
 parser.add_argument('--host', help="user@host")
 parser.add_argument('--key', help="location of private key")
@@ -25,6 +26,9 @@ if args.host:
 def debug(msg):
     if args.debug:
         print "DEBUG:" + msg
+def verbose(msg):
+    if args.verbose:
+        print msg
 
 def execute(command):
     debug("executing sub-process: " + command)
@@ -160,7 +164,7 @@ def build_seed_iso(name, userdatafile):
     if result["returncode"] != 0:
         print "Error: " + result["result"]
         return
-    print result["result"]
+    debug(result["result"])
 
     file = open("meta-data", 'w')
     file.write("instance-id: iid-local01\n")
@@ -170,12 +174,12 @@ def build_seed_iso(name, userdatafile):
 
     result = execute("cp -f " + userdatafile + " user-data")
 
-    result = execute("genisoimage -output seed.iso -volid cidata -joliet -rock user-data meta-data")
+    result = execute("genisoimage -quiet -output seed.iso -volid cidata -joliet -rock user-data meta-data")
 
     if result["returncode"] != 0:
         print "Error: " + result["result"]
         return
-    print result["result"]
+    debug(result["result"])
 
 
 
@@ -188,40 +192,48 @@ def vm_add(vmargs):
     filename = vmargs[3]
     userdatafile = vmargs[4]
 
-    print "building new instance: " + name
-    print " - template : " + filename
+    verbose("building new instance: " + name)
+    verbose(" - template : " + filename)
     config = load_vm_config(filename)
 
     mem  = str(config.get("memory", "1024"))
     cpu  = str(config.get("cpu", "1"))
     disk = config.get("disk")
+    power = config.get("power")
     image = config.get("image", 'trusty-server-nocloud-amd64-disk1')
 
-    print " - image: " + image
+    verbose(" - image: " + image)
     #TODO check to see if VM by name already exists
     # create folder
-    print " - folder: " + esxi_datastore_folder + "/" + name
+    verbose(" - folder: " + esxi_datastore_folder + "/" + name)
     result = remote_execute("mkdir -p " + esxi_datastore_folder + "/" + name)
     if result["returncode"] != 0:
         print "Error: " + result["result"]
         return
-    print result["result"]
+    debug(result["result"])
 
     # copy sysprep vmdk to folder
-    print " - staging new vm..."
-    result = remote_execute("cp " + esxi_datastore_folder + "/sysprep/" + image + ".vmdk " + esxi_datastore_folder + "/" + name + "/" + name + ".vmdk ")
+    verbose(" - staging new vm...")
+    result = remote_execute("vmkfstools -i " + esxi_datastore_folder + "/sysprep/" + image + ".vmdk -d thin " + esxi_datastore_folder + "/" + name + "/" + name + ".vmdk ")
     if result["returncode"] != 0:
         print "Error: " + result["result"]
         return
-    print result["result"]
+    debug(result["result"])
     result = remote_execute("cp " + esxi_datastore_folder + "/sysprep/" + image + ".vmx-template " + esxi_datastore_folder + "/" + name + "/" + name + ".vmx ")
     if result["returncode"] != 0:
         print "Error: " + result["result"]
         return
-    print result["result"]
+    debug(result["result"])
 
-    #TODO vm resize to customer setting
+    if disk:
+        verbose(" - resizing disk to: " + disk)
+        result = remote_execute("vmkfstools -X " + disk + " " + esxi_datastore_folder + "/" + name + "/" + name + ".vmdk ")
+        if result["returncode"] != 0:
+            print "Error: " + result["result"]
+            return
+        debug(result["result"])
 
+    verbose(" - building seed iso... ")
     #create seed.iso with vm metadata and account info
     build_seed_iso(name, userdatafile)
 
@@ -230,41 +242,53 @@ def vm_add(vmargs):
     if result["returncode"] != 0:
         print "Error: " + result["result"]
         return
-    print result["result"]
+    debug(result["result"])
 
     iso="seed.iso"
 
+    verbose(" - applying settings... ")
     result = remote_execute("sed -i \"s/{ISO}/" + iso + "/g\" " + esxi_datastore_folder + "/" + name + "/" + name + ".vmx ")
     if result["returncode"] != 0:
         print "Error: " + result["result"]
         return
-    print result["result"]
+    debug(result["result"])
 
     # update vmx with profile on cpu/mem/iso in remote folder
     result = remote_execute("sed -i \"s/{CPU}/" + cpu + "/g\" " + esxi_datastore_folder + "/" + name + "/" + name + ".vmx ")
     if result["returncode"] != 0:
         print "Error: " + result["result"]
         return
-    print result["result"]
+    debug(result["result"])
     result = remote_execute("sed -i \"s/{NAME}/" + name + "/g\" " + esxi_datastore_folder + "/" + name + "/" + name + ".vmx ")
     if result["returncode"] != 0:
         print "Error: " + result["result"]
         return
-    print result["result"]
+    debug(result["result"])
     result = remote_execute("sed -i \"s/{RAM}/" + mem + "/g\" " + esxi_datastore_folder + "/" + name + "/" + name + ".vmx ")
     if result["returncode"] != 0:
         print "Error: " + result["result"]
         return
-    print result["result"]
+    debug(result["result"])
 
+    verbose(" - registering vm ")
     # register vm with esxi
     result = remote_execute("vim-cmd solo/registervm " + esxi_datastore_folder + "/" + name + "/" + name + ".vmx ")
     if result["returncode"] != 0:
         print "Error: " + result["result"]
         return
-    print result["result"]
+    debug(result["result"])
 
     # if requested, start vm
+    if power:
+        verbose(" - powering on vm. ")
+        id = find_id(name)
+        if id:
+            result = remote_execute("vim-cmd vmsvc/power.on " + id + "")
+            if result["returncode"] != 0:
+                print "Error: " + result["result"]
+                return
+            debug(result["result"])
+
     return True
 
 def vm_delete(vmargs):
@@ -272,24 +296,28 @@ def vm_delete(vmargs):
     if name:
         id = find_id(name) # name of vm
         if id:
+            verbose("deleting " + name + " (id:" + id +")")
+            verbose(" - powering off vm...")
             # force power off
             result = remote_execute("vim-cmd vmsvc/power.off " + id + "")
             if result["returncode"] != 0:
                 print "Error: " + result["result"]
-            print result["result"]
+            debug(result["result"])
 
+            verbose(" - cleaning up seed.iso...")
             # remove seed.iso
             result = remote_execute("rm -f " + esxi_datastore_folder + "/" + name + "/seed.iso")
             if result["returncode"] != 0:
                 print "Error: " + result["result"]
-            print result["result"]
+            debug(result["result"])
 
+            verbose(" - destroying vm...")
             # destroy
             result = remote_execute("vim-cmd vmsvc/destroy " + id + "")
             if result["returncode"] != 0:
                 print "Error: " + result["result"]
                 return
-            print result["result"]
+            debug(result["result"])
 
 
 def vm_snapshot(vmargs):
@@ -301,7 +329,7 @@ def vm_snapshot(vmargs):
             if result["returncode"] != 0:
                 print "Error: " + result["result"]
                 return
-            print result["result"]
+            debug(result["result"])
     elif arg == 'create':
         id = find_id(vmargs[3]) # name of vm
         if id:
